@@ -220,7 +220,16 @@
     // Implausible single points (>50% implied yield -- stale/corrupt cached price)
     // are excluded too: validated via live testing that a single such point can
     // massively skew this mean/stddev and thus the Z-Score for the whole symbol.
-    const priced = history.filter(h=>h.pctOfPrice!=null && h.price>0 && h.pctOfPrice<=50);
+    let priced = history.filter(h=>h.pctOfPrice!=null && h.price>0 && h.pctOfPrice<=50);
+    // Second, independent artifact class: an isolated price SPIKE/DIP vs.
+    // both chronological neighbors produces a normal-looking pctOfPrice
+    // (so the filter above misses it) but would still skew this Z-Score.
+    priced = priced.filter((h,i,arr)=>{
+      if(i===0 || i===arr.length-1) return true;
+      const prev=arr[i-1].price, cur=h.price, next=arr[i+1].price;
+      if(!(prev>0) || !(next>0)) return true;
+      return !((cur>prev*5 && cur>next*5) || (cur<prev/5 && cur<next/5));
+    });
     const yields = priced.map(h=>h.pctOfPrice);
     const m = yields.length ? mean(yields) : 0;
     const sd = yields.length ? stddev(yields, m) : 0;
