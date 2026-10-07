@@ -217,7 +217,10 @@
     }
 
     // Only payments where we have a resolved historical price count toward the distribution.
-    const priced = history.filter(h=>h.pctOfPrice!=null && h.price>0);
+    // Implausible single points (>50% implied yield -- stale/corrupt cached price)
+    // are excluded too: validated via live testing that a single such point can
+    // massively skew this mean/stddev and thus the Z-Score for the whole symbol.
+    const priced = history.filter(h=>h.pctOfPrice!=null && h.price>0 && h.pctOfPrice<=50);
     const yields = priced.map(h=>h.pctOfPrice);
     const m = yields.length ? mean(yields) : 0;
     const sd = yields.length ? stddev(yields, m) : 0;
@@ -353,6 +356,7 @@
     const buyDate = document.getElementById('yocDateSelect').value;
     const entry = history.find(h=>h.date===buyDate);
     if(!entry || !entry.price){ document.getElementById('yocResult').innerHTML = '<div class="stat-box"><div class="lbl">Error</div><div class="val down">No price for that date</div></div>'; return; }
+    if(entry.pctOfPrice!=null && entry.pctOfPrice>50){ document.getElementById('yocResult').innerHTML = '<div class="stat-box" style="grid-column:1/-1"><div class="lbl" style="color:var(--down)">Unzuverlässiger Kurs an diesem Datum</div><div class="val" style="font-size:13px;font-weight:400">Historischer Kurs an diesem Zahltag ist unplausibel (impliziert &gt;50% Einzelrendite) — stale/Near-Null-Kurs in der Quelle. Yield-on-Cost würde hier eine falsche Zahl liefern.</div></div>'; return; }
 
     const oneYearAgo = Date.now()-365*86400000;
     const trailingSum = history.filter(h=>new Date(h.date).getTime()>=oneYearAgo).reduce((s,h)=>s+h.value,0);
