@@ -207,6 +207,25 @@
   function mean(arr){ return arr.reduce((s,v)=>s+v,0)/arr.length; }
   function stddev(arr, m){ return Math.sqrt(arr.reduce((s,v)=>s+(v-m)*(v-m),0)/arr.length); }
 
+  // A real stock split (e.g. WMT 3:1 in 02/2024, NVDA 10:1 in 06/2024) is not
+  // retroactively adjusted in the cached PriceOnDate history -- it shows up
+  // as a sustained, multi-period price-level shift close to a round ratio
+  // (2x, 3x, 10x, ...), unlike the isolated single-point spike/dip filtered
+  // elsewhere in this file.
+  function isSplitLike(p1, p2){
+    // No round-ratio matching: validated against real WMT data (3:1 split,
+    // 23.02.2024) that the ratio between two quarterly-spaced dividend dates
+    // is 2.50x, not a clean 3.0x (price also drifted organically in between)
+    // -- a tight "close to 2/3/4/5/10/20/50x" check misses this. A >=1.8x
+    // level shift between two dividend-payment-dated prices (usually ~3
+    // months apart) for an established payer is essentially always a split
+    // or a data fault, never organic -- safer to break the series here than
+    // silently bridge a possible fabrication.
+    if(!(p1>0) || !(p2>0)) return false;
+    const r = p1>p2 ? p1/p2 : p2/p1;
+    return r >= 1.8;
+  }
+
   async function selectSymbol(fullSymbol){
     await loadCache();
     const summaryRow = [...summaryByExchange.values()].flat().find(r=>r.fullSymbol===fullSymbol);
@@ -230,6 +249,16 @@
       if(!(prev>0) || !(next>0)) return true;
       return !((cur>prev*5 && cur>next*5) || (cur<prev/5 && cur<next/5));
     });
+    // Third artifact class: a real, unadjusted stock split (e.g. WMT 3:1 in
+    // 02/2024) is not an isolated outlier -- both sides look internally
+    // consistent -- but it mechanically shifts PctOfPrice from that date on,
+    // which would skew the mean/stddev and fake the Z-Score. Keep only the
+    // run since the most recent detected split.
+    let splitStart = 0;
+    for(let i=1;i<priced.length;i++){
+      if(isSplitLike(priced[i-1].price, priced[i].price)) splitStart = i;
+    }
+    priced = priced.slice(splitStart);
     const yields = priced.map(h=>h.pctOfPrice);
     const m = yields.length ? mean(yields) : 0;
     const sd = yields.length ? stddev(yields, m) : 0;
@@ -366,6 +395,18 @@
     const entry = history.find(h=>h.date===buyDate);
     if(!entry || !entry.price){ document.getElementById('yocResult').innerHTML = '<div class="stat-box"><div class="lbl">Error</div><div class="val down">No price for that date</div></div>'; return; }
     if(entry.pctOfPrice!=null && entry.pctOfPrice>50){ document.getElementById('yocResult').innerHTML = '<div class="stat-box" style="grid-column:1/-1"><div class="lbl" style="color:var(--down)">Unzuverlässiger Kurs an diesem Datum</div><div class="val" style="font-size:13px;font-weight:400">Historischer Kurs an diesem Zahltag ist unplausibel (impliziert &gt;50% Einzelrendite) — stale/Near-Null-Kurs in der Quelle. Yield-on-Cost würde hier eine falsche Zahl liefern.</div></div>'; return; }
+    // A real, unadjusted stock split (e.g. WMT 3:1 in 02/2024) between the
+    // chosen buy date and today would divide today's trailing dividend sum
+    // by a stale pre-split share count -- understating Yield-on-Cost by
+    // roughly the split ratio. Detected by scanning for a split-like price
+    // jump anywhere after the buy date, same heuristic as the other tools.
+    const pricedAfterBuy = history.filter(h=>h.price>0 && new Date(h.date)>=new Date(buyDate)).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    for(let i=1;i<pricedAfterBuy.length;i++){
+      if(isSplitLike(pricedAfterBuy[i-1].price, pricedAfterBuy[i].price)){
+        document.getElementById('yocResult').innerHTML = '<div class="stat-box" style="grid-column:1/-1"><div class="lbl" style="color:var(--down)">Unbereinigter Aktiensplit seit Kaufdatum</div><div class="val" style="font-size:13px;font-weight:400">Zwischen dem gewählten Kaufdatum und heute liegt ein echter, in der Quelle nicht rückwirkend bereinigter Aktiensplit (Kurssprung um ca. ' + (pricedAfterBuy[i-1].price/pricedAfterBuy[i].price).toFixed(1) + 'x am ' + pricedAfterBuy[i].date + '). Yield-on-Cost würde die heutige Dividende gegen einen veralteten Stückzahl-Maßstab rechnen und eine falsche Zahl liefern, daher nicht berechnet.</div></div>';
+        return;
+      }
+    }
 
     const oneYearAgo = Date.now()-365*86400000;
     const trailingSum = history.filter(h=>new Date(h.date).getTime()>=oneYearAgo).reduce((s,h)=>s+h.value,0);
